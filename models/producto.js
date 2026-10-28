@@ -7,18 +7,29 @@ const Producto = sequelize.define('Producto', {
     allowNull: false
   },
   descripcion: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    allowNull: true
   },
   precio: {
     type: DataTypes.DECIMAL(10, 2),
-    allowNull: false
+    allowNull: false,
+    defaultValue: 0.00
   },
   stock: {
     type: DataTypes.INTEGER,
     defaultValue: 0
+  },
+  categoria_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  proveedor_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true
   }
 }, {
-  timestamps: true // Crea automáticamente createdAt y updatedAt
+  tableName: 'productos',
+  timestamps: true
 });
 
 module.exports = Producto;
