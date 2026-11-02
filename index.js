@@ -1,7 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { Op } = require('sequelize');
+
+// Modelos y conexión
 const {
   sequelize,
   Categoria,
@@ -11,31 +15,52 @@ const {
   Movimiento
 } = require('./models');
 
+// Rutas y Middlewares de Seguridad
+const authRoutes = require('./routes/authRoutes');
+const autenticar = require('./middleware/authMiddleware');
+
 const app = express();
 
-// --- MIDDLEWARES ---
-app.use(cors());
+// ==========================================
+// --- PROTECCIÓN CONTRA ATAQUES COMUNES ---
+// ==========================================
+
+// 1. HELMET: Protege contra XSS y otras vulnerabilidades de cabecera HTTP
+app.use(helmet());
+
+// 2. CORS: Configuración restrictiva (reemplazar por la URL de tu React cuando esté en producción)
+// Por ahora permitimos localhost:5173 (Vite), lo cual previene peticiones de orígenes no autorizados.
+app.use(cors({
+  origin: 'http://localhost:5173',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// 3. RATE LIMIT: Previene ataques de Fuerza Bruta y DoS limitando las peticiones por IP
+const limitador = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100, // Máximo 100 peticiones por IP en ese lapso
+  message: 'Demasiadas peticiones desde esta IP, por favor intente más tarde.'
+});
+app.use('/api/', limitador); // Aplica a todas las rutas que comiencen con /api/
+
+// Parsear el body de las peticiones a JSON (debe ir antes de las rutas)
 app.use(express.json());
+
+// ==========================================
+// --- RUTAS DE AUTENTICACIÓN ---
+// ==========================================
+app.use('/api/auth', authRoutes);
 
 // --- RUTA BASE DE SALUDO ---
 app.get('/', (req, res) => {
-  res.json({
-    message: '¡API Backend SENATI - Panel de Inventario funcionando exitosamente!',
-    endpoints: [
-      '/dashboard/stats',
-      '/productos',
-      '/categorias',
-      '/proveedores',
-      '/usuarios',
-      '/movimientos'
-    ]
-  });
+  res.send('¡API Backend funcionando exitosamente!');
 });
 
 // ==========================================
 // --- DASHBOARD / KPIS ---
 // ==========================================
-app.get('/dashboard/stats', async (req, res) => {
+app.get(['/dashboard/stats', '/api/dashboard/stats'], async (req, res) => {
   try {
     const totalProductos = await Producto.count();
     const totalCategorias = await Categoria.count();
@@ -57,7 +82,6 @@ app.get('/dashboard/stats', async (req, res) => {
       ]
     });
 
-    // Distribución por categoría para el gráfico donut
     const categorias = await Categoria.findAll({
       include: [
         {
@@ -94,24 +118,11 @@ app.get('/dashboard/stats', async (req, res) => {
 });
 
 // ==========================================
-// --- CRUD PRODUCTOS ---
+// --- CRUD PRODUCTOS (RUTAS PROTEGIDAS) ---
 // ==========================================
-app.get('/productos', async (req, res) => {
-  try {
-    const productos = await Producto.findAll({
-      include: [
-        { model: Categoria, as: 'categoria', attributes: ['id', 'nombre'] },
-        { model: Proveedor, as: 'proveedor', attributes: ['id', 'razon_social'] }
-      ],
-      order: [['id', 'ASC']]
-    });
-    res.json(productos);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
-app.post('/productos', async (req, res) => {
+// 1. POST: Crear un nuevo producto (Protegido por JWT: Administrador y Almacenero)
+app.post(['/productos', '/api/productos'], autenticar(['Administrador', 'Almacenero']), async (req, res) => {
   try {
     const { nombre, descripcion, precio, stock, categoria_id, proveedor_id } = req.body;
     const nuevoProducto = await Producto.create({
@@ -130,13 +141,30 @@ app.post('/productos', async (req, res) => {
       ]
     });
 
-    res.status(201).json(productoCreado);
+    res.status(201).json(productoCreado || nuevoProducto);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.put('/productos/:id', async (req, res) => {
+// 2. GET: Obtener todos los productos (Protegido por JWT: Administrador y Almacenero)
+app.get(['/productos', '/api/productos'], autenticar(['Administrador', 'Almacenero']), async (req, res) => {
+  try {
+    const productos = await Producto.findAll({
+      include: [
+        { model: Categoria, as: 'categoria', attributes: ['id', 'nombre'] },
+        { model: Proveedor, as: 'proveedor', attributes: ['id', 'razon_social'] }
+      ],
+      order: [['id', 'ASC']]
+    });
+    res.json(productos);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. PUT: Actualizar un producto existente (Protegido por JWT: Administrador y Almacenero)
+app.put(['/productos/:id', '/api/productos/:id'], autenticar(['Administrador', 'Almacenero']), async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, descripcion, precio, stock, categoria_id, proveedor_id } = req.body;
@@ -159,17 +187,18 @@ app.put('/productos/:id', async (req, res) => {
       ]
     });
 
-    res.json(productoActualizado);
+    res.json(productoActualizado || { message: 'Producto actualizado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/productos/:id', async (req, res) => {
+// 4. DELETE: Eliminar un producto (Protegido por JWT: Administrador y Almacenero)
+app.delete(['/productos/:id', '/api/productos/:id'], autenticar(['Administrador', 'Almacenero']), async (req, res) => {
   try {
     const { id } = req.params;
     await Producto.destroy({ where: { id } });
-    res.json({ message: 'Producto eliminado correctamente' });
+    res.json({ message: 'Producto eliminado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -178,7 +207,7 @@ app.delete('/productos/:id', async (req, res) => {
 // ==========================================
 // --- CRUD CATEGORÍAS ---
 // ==========================================
-app.get('/categorias', async (req, res) => {
+app.get(['/categorias', '/api/categorias'], async (req, res) => {
   try {
     const categorias = await Categoria.findAll({
       include: [
@@ -191,7 +220,6 @@ app.get('/categorias', async (req, res) => {
       order: [['id', 'ASC']]
     });
 
-    // Añadir campo 'cantidadProductos' para facilitar la tabla
     const resultado = categorias.map(c => {
       const plain = c.get({ plain: true });
       return {
@@ -206,7 +234,7 @@ app.get('/categorias', async (req, res) => {
   }
 });
 
-app.post('/categorias', async (req, res) => {
+app.post(['/categorias', '/api/categorias'], async (req, res) => {
   try {
     const { nombre, descripcion } = req.body;
     const nuevaCategoria = await Categoria.create({ nombre, descripcion });
@@ -216,7 +244,7 @@ app.post('/categorias', async (req, res) => {
   }
 });
 
-app.put('/categorias/:id', async (req, res) => {
+app.put(['/categorias/:id', '/api/categorias/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, descripcion } = req.body;
@@ -228,7 +256,7 @@ app.put('/categorias/:id', async (req, res) => {
   }
 });
 
-app.delete('/categorias/:id', async (req, res) => {
+app.delete(['/categorias/:id', '/api/categorias/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     await Categoria.destroy({ where: { id } });
@@ -241,7 +269,7 @@ app.delete('/categorias/:id', async (req, res) => {
 // ==========================================
 // --- CRUD PROVEEDORES ---
 // ==========================================
-app.get('/proveedores', async (req, res) => {
+app.get(['/proveedores', '/api/proveedores'], async (req, res) => {
   try {
     const proveedores = await Proveedor.findAll({
       order: [['id', 'ASC']]
@@ -252,7 +280,7 @@ app.get('/proveedores', async (req, res) => {
   }
 });
 
-app.post('/proveedores', async (req, res) => {
+app.post(['/proveedores', '/api/proveedores'], async (req, res) => {
   try {
     const { razon_social, contacto, telefono, email } = req.body;
     const nuevo = await Proveedor.create({ razon_social, contacto, telefono, email });
@@ -262,7 +290,7 @@ app.post('/proveedores', async (req, res) => {
   }
 });
 
-app.put('/proveedores/:id', async (req, res) => {
+app.put(['/proveedores/:id', '/api/proveedores/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     const { razon_social, contacto, telefono, email } = req.body;
@@ -277,7 +305,7 @@ app.put('/proveedores/:id', async (req, res) => {
   }
 });
 
-app.delete('/proveedores/:id', async (req, res) => {
+app.delete(['/proveedores/:id', '/api/proveedores/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     await Proveedor.destroy({ where: { id } });
@@ -290,7 +318,7 @@ app.delete('/proveedores/:id', async (req, res) => {
 // ==========================================
 // --- CRUD USUARIOS ---
 // ==========================================
-app.get('/usuarios', async (req, res) => {
+app.get(['/usuarios', '/api/usuarios'], async (req, res) => {
   try {
     const usuarios = await Usuario.findAll({
       attributes: { exclude: ['password'] },
@@ -302,7 +330,7 @@ app.get('/usuarios', async (req, res) => {
   }
 });
 
-app.post('/usuarios', async (req, res) => {
+app.post(['/usuarios', '/api/usuarios'], async (req, res) => {
   try {
     const { nombre, email, password, rol, estado } = req.body;
     const nuevo = await Usuario.create({
@@ -318,7 +346,7 @@ app.post('/usuarios', async (req, res) => {
   }
 });
 
-app.put('/usuarios/:id', async (req, res) => {
+app.put(['/usuarios/:id', '/api/usuarios/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, email, password, rol, estado } = req.body;
@@ -328,7 +356,7 @@ app.put('/usuarios/:id', async (req, res) => {
       updateData.password = password;
     }
 
-    await Usuario.update(updateData, { where: { id } });
+    await Usuario.update(updateData, { where: { id }, individualHooks: true });
     const actualizado = await Usuario.findByPk(id, {
       attributes: { exclude: ['password'] }
     });
@@ -338,7 +366,7 @@ app.put('/usuarios/:id', async (req, res) => {
   }
 });
 
-app.delete('/usuarios/:id', async (req, res) => {
+app.delete(['/usuarios/:id', '/api/usuarios/:id'], async (req, res) => {
   try {
     const { id } = req.params;
     await Usuario.destroy({ where: { id } });
@@ -351,7 +379,7 @@ app.delete('/usuarios/:id', async (req, res) => {
 // =========================================================================
 // --- RETO TÉCNICO: MOVIMIENTOS (KARDEX) CON TRANSACCIÓN EN SEQUELIZE ---
 // =========================================================================
-app.get('/movimientos', async (req, res) => {
+app.get(['/movimientos', '/api/movimientos'], async (req, res) => {
   try {
     const movimientos = await Movimiento.findAll({
       include: [
@@ -366,8 +394,7 @@ app.get('/movimientos', async (req, res) => {
   }
 });
 
-app.post('/movimientos', async (req, res) => {
-  // Se inicia una transacción administrada por Sequelize
+app.post(['/movimientos', '/api/movimientos'], async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
@@ -384,7 +411,6 @@ app.post('/movimientos', async (req, res) => {
       return res.status(400).json({ error: 'Tipo de movimiento inválido. Debe ser Entrada, Salida o Ajuste.' });
     }
 
-    // Buscar el producto bloqueando la fila para actualización concurrente segura
     const producto = await Producto.findByPk(producto_id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!producto) {
       await t.rollback();
@@ -394,10 +420,8 @@ app.post('/movimientos', async (req, res) => {
     let nuevoStock = producto.stock;
 
     if (tipo_movimiento === 'Entrada') {
-      // Sumar al stock
       nuevoStock = producto.stock + cantNum;
     } else if (tipo_movimiento === 'Salida') {
-      // Validar si hay stock suficiente
       if (producto.stock < cantNum) {
         await t.rollback();
         return res.status(400).json({
@@ -406,11 +430,9 @@ app.post('/movimientos', async (req, res) => {
       }
       nuevoStock = producto.stock - cantNum;
     } else if (tipo_movimiento === 'Ajuste') {
-      // Ajuste directo del stock a la cantidad especificada
       nuevoStock = cantNum;
     }
 
-    // 1. Insertar el registro en la tabla Movimientos
     const nuevoMovimiento = await Movimiento.create(
       {
         producto_id,
@@ -423,13 +445,9 @@ app.post('/movimientos', async (req, res) => {
       { transaction: t }
     );
 
-    // 2. Actualizar simultáneamente el campo stock en la tabla Productos
     await producto.update({ stock: nuevoStock }, { transaction: t });
-
-    // Confirmar la transacción (Commit)
     await t.commit();
 
-    // Consultar el movimiento creado con sus relaciones para devolverlo al cliente
     const movimientoCompleto = await Movimiento.findByPk(nuevoMovimiento.id, {
       include: [
         { model: Producto, as: 'producto', attributes: ['id', 'nombre', 'stock'] },
@@ -443,7 +461,6 @@ app.post('/movimientos', async (req, res) => {
       nuevoStock
     });
   } catch (error) {
-    // Revertir cambios ante cualquier error
     await t.rollback();
     console.error('Error al registrar movimiento con transacción:', error);
     res.status(500).json({ error: error.message });
@@ -481,7 +498,7 @@ async function sembrarDatosIniciales() {
       { nombre: 'Ana Torres Prado', email: 'atorres@inventario.com', password: 'password123', rol: 'Almacenero', estado: 'Activo' },
       { nombre: 'Carlos Mendoza R.', email: 'cmendoza@inventario.com', password: 'password123', rol: 'Administrador', estado: 'Activo' },
       { nombre: 'Sofía Rojas Silva', email: 'srojas@inventario.com', password: 'password123', rol: 'Supervisor', estado: 'Activo' }
-    ]);
+    ], { individualHooks: true });
 
     console.log('Sembrando productos iniciales...');
     const prods = await Producto.bulkCreate([
@@ -508,17 +525,17 @@ async function sembrarDatosIniciales() {
 // ==========================================
 // --- SINCRONIZACIÓN Y ARRANQUE ---
 // ==========================================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3006;
 
-// alter: true actualiza las columnas de las tablas sin borrar los datos existentes
-sequelize.sync({ alter: true })
+// force: false evita que se borren los datos cada vez que se reinicia el servidor
+sequelize.sync({ force: false })
   .then(async () => {
-    console.log('Base de datos conectada y tablas sincronizadas correctamente.');
+    console.log('Base de datos conectada y sincronizada.');
     await sembrarDatosIniciales();
     app.listen(PORT, () => {
       console.log(`Servidor corriendo en http://localhost:${PORT}`);
     });
   })
   .catch((error) => {
-    console.error('Error al sincronizar con la base de datos:', error);
+    console.error('Error al conectar con la base de datos:', error);
   });
