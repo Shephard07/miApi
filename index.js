@@ -31,7 +31,10 @@ app.use(helmet());
 // 2. CORS: Configuración restrictiva (reemplazar por la URL de tu React cuando esté en producción)
 // Por ahora permitimos localhost:5173 (Vite), lo cual previene peticiones de orígenes no autorizados.
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173',
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
